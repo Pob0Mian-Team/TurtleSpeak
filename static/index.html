@@ -129,6 +129,7 @@ joinBtn.onclick = function () {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
     audioCtx.resume();
+    console.log('AudioContext created, state=' + audioCtx.state + ', sampleRate=' + audioCtx.sampleRate);
   }
 
   connect();
@@ -245,6 +246,7 @@ function startAudio() {
       autoGainControl: false
     }
   }).then(function (stream) {
+    console.log('getUserMedia SUCCESS, tracks=' + stream.getAudioTracks().length);
     micStream = stream;
     var source = audioCtx.createMediaStreamSource(stream);
     processor = audioCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
@@ -272,11 +274,13 @@ function startAudio() {
     processor.connect(monitorGain);
     monitorGain.connect(audioCtx.destination);
   }).catch(function (err) {
-    console.error('Microphone error:', err);
+    console.error('Microphone error:', err.name, err.message);
+    login.style.display = 'block';
+    roomEl.style.display = 'none';
     if (location.protocol === 'http:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
       loginError.textContent = 'Mic blocked: browsers require HTTPS or localhost for mic access on non-local IPs';
     } else {
-      loginError.textContent = 'Microphone access denied';
+      loginError.textContent = 'Microphone access denied: ' + err.name;
     }
     loginError.style.display = 'block';
   });
@@ -296,6 +300,10 @@ function schedulePlayback() {
   var channel = buf.getChannelData(0);
 
   var hasData = ((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) >= FRAME_SAMPLES;
+  if (!hasData && writeIdx > 0 && !window._loggedNoData) {
+    window._loggedNoData = true;
+    console.log('PLAYBACK: writeIdx=' + writeIdx + ' playIdx=' + playIdx + ' diff=' + ((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) + ' need=' + FRAME_SAMPLES);
+  }
 
   if (hasData) {
     var peak = 0;

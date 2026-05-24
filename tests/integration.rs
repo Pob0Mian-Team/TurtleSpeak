@@ -29,24 +29,14 @@ async fn test_two_clients_audio_relay() {
     b.send(Message::Text(r#"{"type":"join","name":"Bob"}"#.into())).await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Drain join-related text messages from both clients
-    while let Ok(Some(msg)) =
-        tokio::time::timeout(Duration::from_millis(200), a.next()).await
-    {
-        if let Ok(msg) = msg {
-            if msg.is_text() {
-                continue;
-            }
-        }
+    // Drain join-related text messages: Alice gets user_list + peer_joined (2), Bob gets user_list (1)
+    for _ in 0..2 {
+        let msg = a.next().await.unwrap().unwrap();
+        assert!(msg.is_text());
     }
-    while let Ok(Some(msg)) =
-        tokio::time::timeout(Duration::from_millis(200), b.next()).await
-    {
-        if let Ok(msg) = msg {
-            if msg.is_text() {
-                continue;
-            }
-        }
+    for _ in 0..1 {
+        let msg = b.next().await.unwrap().unwrap();
+        assert!(msg.is_text());
     }
 
     let audio = vec![0u8; 960];

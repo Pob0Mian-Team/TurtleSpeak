@@ -237,6 +237,17 @@ function startAudio() {
 
   nextScheduleTime = audioCtx.currentTime + 0.02;
 
+  schedulePlayback();
+  if (!levelTimer) {
+    levelTimer = setInterval(updateLevels, 80);
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    console.warn('navigator.mediaDevices not available (insecure context?), listen-only mode');
+    roomStatus.textContent = 'connected (mic unavailable — listen only)';
+    return;
+  }
+
   navigator.mediaDevices.getUserMedia({
     audio: {
       sampleRate: SAMPLE_RATE,
@@ -285,10 +296,6 @@ function startAudio() {
     loginError.style.display = 'block';
   });
 
-  schedulePlayback();
-  if (!levelTimer) {
-    levelTimer = setInterval(updateLevels, 80);
-  }
 }
 
 function schedulePlayback() {

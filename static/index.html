@@ -1,2 +1,329 @@
 <!DOCTYPE html>
-<html><head><meta charset="UTF-8"></head><body>TurtleSpeak</body></html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TurtleSpeak</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+#app { width: 360px; padding: 24px; }
+h1 { font-size: 24px; margin-bottom: 4px; color: #38bdf8; }
+.subtitle { font-size: 13px; color: #64748b; margin-bottom: 20px; }
+.card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+input { width: 100%; padding: 10px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 14px; outline: none; }
+input:focus { border-color: #38bdf8; }
+button { width: 100%; padding: 10px; background: #38bdf8; color: #0f172a; border: none; border-radius: 6px; font-weight: 600; font-size: 14px; cursor: pointer; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.leave { background: #ef4444; color: #fff; }
+.user { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 14px; }
+.user .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 8px; }
+.user .dot.silent { background: #475569; }
+.stats { font-size: 11px; color: #64748b; text-align: right; }
+.status { font-size: 12px; color: #64748b; text-align: center; margin-top: 4px; }
+.error { color: #ef4444; font-size: 13px; margin-top: 8px; display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>TurtleSpeak</h1>
+  <p class="subtitle">LAN voice chat</p>
+
+  <div id="login" class="card">
+    <input id="nameInput" placeholder="Your name" maxlength="24" autocomplete="off">
+    <button id="joinBtn" style="margin-top:10px">Join Room</button>
+    <div id="loginError" class="error"></div>
+  </div>
+
+  <div id="room" style="display:none">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <span style="font-size:14px; font-weight:600">Room</span>
+        <span class="stats" id="stats">--</span>
+      </div>
+      <div id="userList"></div>
+      <div id="roomStatus" class="status">connected</div>
+    </div>
+    <button class="leave" id="leaveBtn">Leave</button>
+  </div>
+</div>
+
+<script>
+const SAMPLE_RATE = 48000;
+const FRAME_SAMPLES = 480;
+const FRAME_BYTES = FRAME_SAMPLES * 2;
+const RING_CAP_SAMPLES = FRAME_SAMPLES * 50;
+const MAX_DEPTH_SAMPLES = FRAME_SAMPLES * 10;
+
+var ws = null;
+var audioCtx = null;
+var processor = null;
+var micStream = null;
+var remoteGain = null;
+var myId = null;
+var myName = null;
+var reconnectTimer = null;
+var reconnectDelay = 1000;
+var peers = {};
+var ringBuf = new Int16Array(RING_CAP_SAMPLES);
+var writeIdx = 0;
+var playIdx = 0;
+var nextScheduleTime = 0;
+var bytesReceived = 0;
+var lastBytesReset = 0;
+var scheduleTimer = null;
+
+var login = document.getElementById('login');
+var roomEl = document.getElementById('room');
+var nameInput = document.getElementById('nameInput');
+var joinBtn = document.getElementById('joinBtn');
+var leaveBtn = document.getElementById('leaveBtn');
+var userListEl = document.getElementById('userList');
+var statsEl = document.getElementById('stats');
+var loginError = document.getElementById('loginError');
+var roomStatus = document.getElementById('roomStatus');
+
+joinBtn.onclick = function () {
+  var name = nameInput.value.trim();
+  if (!name) {
+    loginError.textContent = 'Enter a name';
+    loginError.style.display = 'block';
+    return;
+  }
+  loginError.style.display = 'none';
+  myName = name;
+  connect();
+};
+
+leaveBtn.onclick = function () { disconnect(true); };
+
+function connect() {
+  var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(protocol + '//' + location.host + '/ws');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = onOpen;
+  ws.onmessage = onMessage;
+  ws.onclose = onClose;
+  ws.onerror = function () {};
+}
+
+function onOpen() {
+  reconnectDelay = 1000;
+  ws.send(JSON.stringify({ type: 'join', name: myName }));
+}
+
+function onMessage(evt) {
+  if (typeof evt.data === 'string') {
+    handleControl(JSON.parse(evt.data));
+  } else if (evt.data instanceof ArrayBuffer) {
+    handleAudio(evt.data);
+  }
+}
+
+function handleControl(msg) {
+  if (msg.type === 'user_list') {
+    login.style.display = 'none';
+    roomEl.style.display = 'block';
+    roomStatus.textContent = 'connected';
+    peers = {};
+    for (var i = 0; i < msg.users.length; i++) {
+      var u = msg.users[i];
+      if (u.name === myName) {
+        myId = u.id;
+      } else {
+        peers[u.id] = { id: u.id, name: u.name };
+      }
+    }
+    renderUserList();
+    startAudio();
+  } else if (msg.type === 'peer_joined') {
+    if (msg.name === myName) return;
+    peers[msg.id] = { id: msg.id, name: msg.name };
+    renderUserList();
+  } else if (msg.type === 'peer_left') {
+    delete peers[msg.id];
+    renderUserList();
+  }
+}
+
+function handleAudio(data) {
+  var src = new Int16Array(data);
+
+  while (((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) > MAX_DEPTH_SAMPLES) {
+    for (var i = 0; i < FRAME_SAMPLES; i++) {
+      ringBuf[(playIdx + i) % RING_CAP_SAMPLES] = 0;
+    }
+    playIdx = (playIdx + FRAME_SAMPLES) % RING_CAP_SAMPLES;
+  }
+
+  for (var i = 0; i < FRAME_SAMPLES; i++) {
+    var idx = (writeIdx + i) % RING_CAP_SAMPLES;
+    var sample = ringBuf[idx] + src[i];
+    if (sample > 32767) sample = 32767;
+    else if (sample < -32768) sample = -32768;
+    ringBuf[idx] = sample;
+  }
+  writeIdx = (writeIdx + FRAME_SAMPLES) % RING_CAP_SAMPLES;
+
+  bytesReceived += FRAME_BYTES;
+  var now = Date.now();
+  if (!lastBytesReset) lastBytesReset = now;
+  if (now - lastBytesReset >= 1000) {
+    lastBytesReset = now;
+    bytesReceived = 0;
+  }
+}
+
+function startAudio() {
+  if (audioCtx) return;
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+
+  remoteGain = audioCtx.createGain();
+  remoteGain.gain.value = 1.0;
+  remoteGain.connect(audioCtx.destination);
+
+  nextScheduleTime = audioCtx.currentTime + 0.02;
+
+  navigator.mediaDevices.getUserMedia({
+    audio: {
+      sampleRate: SAMPLE_RATE,
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    }
+  }).then(function (stream) {
+    micStream = stream;
+    var source = audioCtx.createMediaStreamSource(stream);
+    processor = audioCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
+    processor.onaudioprocess = function (e) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      var input = e.inputBuffer.getChannelData(0);
+      var int16 = new Int16Array(FRAME_SAMPLES);
+      for (var i = 0; i < FRAME_SAMPLES; i++) {
+        var s = Math.max(-1, Math.min(1, input[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      ws.send(int16.buffer);
+    };
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+  }).catch(function () {
+    loginError.textContent = 'Microphone access required';
+    loginError.style.display = 'block';
+  });
+
+  schedulePlayback();
+}
+
+function schedulePlayback() {
+  if (!audioCtx) return;
+
+  nextScheduleTime += FRAME_SAMPLES / SAMPLE_RATE;
+
+  var buf = audioCtx.createBuffer(1, FRAME_SAMPLES, SAMPLE_RATE);
+  var channel = buf.getChannelData(0);
+
+  if (((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) >= FRAME_SAMPLES) {
+    for (var i = 0; i < FRAME_SAMPLES; i++) {
+      var idx = (playIdx + i) % RING_CAP_SAMPLES;
+      channel[i] = ringBuf[idx] / 32768;
+      ringBuf[idx] = 0;
+    }
+  }
+
+  var src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(remoteGain);
+  src.start(nextScheduleTime);
+
+  playIdx = (playIdx + FRAME_SAMPLES) % RING_CAP_SAMPLES;
+
+  var delay = (nextScheduleTime - audioCtx.currentTime) * 1000;
+  scheduleTimer = setTimeout(schedulePlayback, Math.max(1, delay));
+}
+
+function renderUserList() {
+  var users = [{ name: myName, id: myId, me: true }];
+  for (var pid in peers) {
+    if (Object.prototype.hasOwnProperty.call(peers, pid)) {
+      users.push({ name: peers[pid].name, id: pid, me: false });
+    }
+  }
+  userListEl.innerHTML = users.map(function (u) {
+    return '<div class="user"><span><span class="dot' + (u.me ? '' : ' silent') + '"></span>' + u.name + (u.me ? ' (you)' : '') + '</span></div>';
+  }).join('');
+  updateStats();
+}
+
+function updateStats() {
+  statsEl.textContent = Math.round(bytesReceived / 1024) + ' KB/s | ' + Object.keys(peers).length + ' peers';
+}
+
+function disconnect(intentional) {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (scheduleTimer) {
+    clearTimeout(scheduleTimer);
+    scheduleTimer = null;
+  }
+  if (processor) {
+    processor.disconnect();
+    processor = null;
+  }
+  if (micStream) {
+    micStream.getTracks().forEach(function (t) { t.stop(); });
+    micStream = null;
+  }
+  if (remoteGain) {
+    remoteGain.disconnect();
+    remoteGain = null;
+  }
+  if (audioCtx) {
+    audioCtx.close();
+    audioCtx = null;
+  }
+  peers = {};
+  myId = null;
+  ringBuf = new Int16Array(RING_CAP_SAMPLES);
+  writeIdx = 0;
+  playIdx = 0;
+  nextScheduleTime = 0;
+  bytesReceived = 0;
+  lastBytesReset = 0;
+
+  if (ws) {
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.onmessage = null;
+    ws.onopen = null;
+    ws.close();
+    ws = null;
+  }
+
+  if (intentional) {
+    login.style.display = 'block';
+    roomEl.style.display = 'none';
+  } else {
+    roomStatus.textContent = 'reconnecting...';
+    scheduleReconnect();
+  }
+}
+
+function onClose() {
+  disconnect(false);
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(function () {
+    reconnectTimer = null;
+    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+    connect();
+  }, reconnectDelay);
+}
+</script>
+</body>
+</html>

@@ -224,8 +224,13 @@ function startAudio() {
     monitorGain.gain.value = 0;
     processor.connect(monitorGain);
     monitorGain.connect(audioCtx.destination);
-  }).catch(function () {
-    loginError.textContent = 'Microphone access required';
+  }).catch(function (err) {
+    console.error('Microphone error:', err);
+    if (location.protocol === 'http:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      loginError.textContent = 'Mic blocked: browsers require HTTPS or localhost for mic access on non-local IPs';
+    } else {
+      loginError.textContent = 'Microphone access denied';
+    }
     loginError.style.display = 'block';
   });
 
@@ -240,20 +245,21 @@ function schedulePlayback() {
   var buf = audioCtx.createBuffer(1, FRAME_SAMPLES, SAMPLE_RATE);
   var channel = buf.getChannelData(0);
 
-  if (((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) >= FRAME_SAMPLES) {
+  var hasData = ((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) >= FRAME_SAMPLES;
+
+  if (hasData) {
     for (var i = 0; i < FRAME_SAMPLES; i++) {
       var idx = (playIdx + i) % RING_CAP_SAMPLES;
       channel[i] = ringBuf[idx] / 32768;
       ringBuf[idx] = 0;
     }
+    playIdx = (playIdx + FRAME_SAMPLES) % RING_CAP_SAMPLES;
   }
 
   var src = audioCtx.createBufferSource();
   src.buffer = buf;
   src.connect(remoteGain);
   src.start(nextScheduleTime);
-
-  playIdx = (playIdx + FRAME_SAMPLES) % RING_CAP_SAMPLES;
 
   var delay = (nextScheduleTime - audioCtx.currentTime) * 1000;
   scheduleTimer = setTimeout(schedulePlayback, Math.max(1, delay));

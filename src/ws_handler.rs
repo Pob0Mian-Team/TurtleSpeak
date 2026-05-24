@@ -30,6 +30,7 @@ async fn handle(socket: WebSocket, room: SharedRoom) {
                     })
                     .unwrap();
                     if ws_tx.send(Message::Text(user_list.into())).await.is_err() {
+                        room.leave(&id);
                         return;
                     }
 

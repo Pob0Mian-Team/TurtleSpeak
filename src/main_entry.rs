@@ -11,5 +11,5 @@ pub fn make_app() -> Router {
                 crate::ws_handler::handler(ws, room)
             }
         }))
-        .nest_service("/", tower_http::services::ServeDir::new("static"))
+        .fallback_service(tower_http::services::ServeDir::new("static"))
 }

@@ -50,7 +50,7 @@ button.leave { background: #ef4444; color: #fff; }
 
 <script>
 const SAMPLE_RATE = 48000;
-const FRAME_SAMPLES = 480;
+const FRAME_SAMPLES = 512;
 const FRAME_BYTES = FRAME_SAMPLES * 2;
 const RING_CAP_SAMPLES = FRAME_SAMPLES * 50;
 const MAX_DEPTH_SAMPLES = FRAME_SAMPLES * 10;
@@ -70,7 +70,8 @@ var writeIdx = 0;
 var playIdx = 0;
 var nextScheduleTime = 0;
 var bytesReceived = 0;
-var lastBytesReset = 0;
+var lastBps = 0;
+var bpsResetTime = 0;
 var scheduleTimer = null;
 
 var login = document.getElementById('login');
@@ -167,10 +168,12 @@ function handleAudio(data) {
 
   bytesReceived += FRAME_BYTES;
   var now = Date.now();
-  if (!lastBytesReset) lastBytesReset = now;
-  if (now - lastBytesReset >= 1000) {
-    lastBytesReset = now;
+  if (!bpsResetTime) bpsResetTime = now;
+  if (now - bpsResetTime >= 1000) {
+    lastBps = bytesReceived;
     bytesReceived = 0;
+    bpsResetTime = now;
+    updateStats();
   }
 }
 
@@ -207,7 +210,6 @@ function startAudio() {
       ws.send(int16.buffer);
     };
     source.connect(processor);
-    processor.connect(audioCtx.destination);
   }).catch(function () {
     loginError.textContent = 'Microphone access required';
     loginError.style.display = 'block';
@@ -257,7 +259,7 @@ function renderUserList() {
 }
 
 function updateStats() {
-  statsEl.textContent = Math.round(bytesReceived / 1024) + ' KB/s | ' + Object.keys(peers).length + ' peers';
+  statsEl.textContent = Math.round(lastBps / 1024) + ' KB/s | ' + Object.keys(peers).length + ' peers';
 }
 
 function disconnect(intentional) {
@@ -292,7 +294,8 @@ function disconnect(intentional) {
   playIdx = 0;
   nextScheduleTime = 0;
   bytesReceived = 0;
-  lastBytesReset = 0;
+  lastBps = 0;
+  bpsResetTime = 0;
 
   if (ws) {
     ws.onclose = null;

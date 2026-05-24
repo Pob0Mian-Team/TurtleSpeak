@@ -93,6 +93,12 @@ joinBtn.onclick = function () {
   }
   loginError.style.display = 'none';
   myName = name;
+
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+    audioCtx.resume();
+  }
+
   connect();
 };
 
@@ -178,8 +184,12 @@ function handleAudio(data) {
 }
 
 function startAudio() {
-  if (audioCtx) return;
-  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  if (processor) return;
+
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+    audioCtx.resume();
+  }
 
   remoteGain = audioCtx.createGain();
   remoteGain.gain.value = 1.0;
@@ -210,6 +220,10 @@ function startAudio() {
       ws.send(int16.buffer);
     };
     source.connect(processor);
+    var monitorGain = audioCtx.createGain();
+    monitorGain.gain.value = 0;
+    processor.connect(monitorGain);
+    monitorGain.connect(audioCtx.destination);
   }).catch(function () {
     loginError.textContent = 'Microphone access required';
     loginError.style.display = 'block';
@@ -283,7 +297,7 @@ function disconnect(intentional) {
     remoteGain.disconnect();
     remoteGain = null;
   }
-  if (audioCtx) {
+  if (intentional && audioCtx) {
     audioCtx.close();
     audioCtx = null;
   }

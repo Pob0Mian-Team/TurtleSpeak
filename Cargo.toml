@@ -1,0 +1,26 @@
+[package]
+name = "turtlespeak"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "turtlespeak_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "turtlespeak"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-http = { version = "0.6", features = ["fs"] }
+ulid = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"

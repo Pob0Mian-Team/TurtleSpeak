@@ -15,6 +15,12 @@ pub struct Room {
     clients: HashMap<String, Arc<Client>>,
 }
 
+impl Default for Room {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Room {
     pub fn new() -> Self {
         Self { clients: HashMap::new() }
@@ -22,6 +28,10 @@ impl Room {
 
     pub fn len(&self) -> usize {
         self.clients.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.clients.is_empty()
     }
 
     pub fn join(
@@ -59,7 +69,7 @@ impl Room {
 
     pub fn broadcast_json(&self, exclude_id: Option<&str>, msg: &str) {
         for (cid, client) in &self.clients {
-            if exclude_id.map_or(true, |eid| cid != eid) {
+            if exclude_id.is_none_or(|eid| cid != eid) {
                 let _ = client.msg_tx.send(msg.to_string());
             }
         }

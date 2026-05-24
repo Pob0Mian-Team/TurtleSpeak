@@ -22,24 +22,27 @@ async fn handle(socket: WebSocket, room: SharedRoom) {
                 if let Ok(ClientMessage::Join { name }) =
                     serde_json::from_str::<ClientMessage>(&text)
                 {
-                    let mut room = room.lock().await;
-                    let (id, _) = room.join(name.clone(), audio_tx, msg_tx);
+                    let (id, user_list_json, peer_msg_json) = {
+                        let mut room = room.lock().await;
+                        let (id, _) = room.join(name.clone(), audio_tx, msg_tx);
+                        let user_list = serde_json::to_string(&ServerMessage::UserList {
+                            users: room.user_list(),
+                        })
+                        .unwrap();
+                        let peer_msg = serde_json::to_string(&ServerMessage::PeerJoined {
+                            id: id.clone(),
+                            name: name.clone(),
+                        })
+                        .unwrap();
+                        (id, user_list, peer_msg)
+                    };
 
-                    let user_list = serde_json::to_string(&ServerMessage::UserList {
-                        users: room.user_list(),
-                    })
-                    .unwrap();
-                    if ws_tx.send(Message::Text(user_list.into())).await.is_err() {
-                        room.leave(&id);
+                    if ws_tx.send(Message::Text(user_list_json.into())).await.is_err() {
+                        room.lock().await.leave(&id);
                         return;
                     }
 
-                    let peer_msg = serde_json::to_string(&ServerMessage::PeerJoined {
-                        id: id.clone(),
-                        name: name.clone(),
-                    })
-                    .unwrap();
-                    room.broadcast_json(Some(&id), &peer_msg);
+                    room.lock().await.broadcast_json(Some(&id), &peer_msg_json);
 
                     break (id, name);
                 }

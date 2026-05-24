@@ -22,6 +22,14 @@ button.leave { background: #ef4444; color: #fff; }
 .stats { font-size: 11px; color: #64748b; text-align: right; }
 .status { font-size: 12px; color: #64748b; text-align: center; margin-top: 4px; }
 .error { color: #ef4444; font-size: 13px; margin-top: 8px; display: none; }
+.levels { margin-bottom: 10px; }
+.level-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
+.level-label { width: 18px; color: #94a3b8; }
+.level-bar { flex: 1; height: 8px; background: #334155; border-radius: 4px; overflow: hidden; }
+.level-fill { height: 100%; border-radius: 4px; transition: width 60ms linear; }
+.level-fill.mic { background: #38bdf8; }
+.level-fill.speaker { background: #22c55e; }
+.level-val { width: 30px; text-align: right; color: #64748b; font-size: 10px; }
 </style>
 </head>
 <body>
@@ -37,6 +45,18 @@ button.leave { background: #ef4444; color: #fff; }
 
   <div id="room" style="display:none">
     <div class="card">
+      <div class="levels">
+        <div class="level-row">
+          <span class="level-label">IN</span>
+          <div class="level-bar"><div id="micFill" class="level-fill mic" style="width:0%"></div></div>
+          <span id="micVal" class="level-val">-inf</span>
+        </div>
+        <div class="level-row">
+          <span class="level-label">OUT</span>
+          <div class="level-bar"><div id="spkFill" class="level-fill speaker" style="width:0%"></div></div>
+          <span id="spkVal" class="level-val">-inf</span>
+        </div>
+      </div>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <span style="font-size:14px; font-weight:600">Room</span>
         <span class="stats" id="stats">--</span>
@@ -73,6 +93,14 @@ var bytesReceived = 0;
 var lastBps = 0;
 var bpsResetTime = 0;
 var scheduleTimer = null;
+var levelTimer = null;
+var micLevel = 0;
+var spkLevel = 0;
+var micPeak = 0;
+var spkPeak = 0;
+var levelDecay = 0.97;
+var micActive = false;
+var audioReceived = false;
 
 var login = document.getElementById('login');
 var roomEl = document.getElementById('room');
@@ -83,6 +111,10 @@ var userListEl = document.getElementById('userList');
 var statsEl = document.getElementById('stats');
 var loginError = document.getElementById('loginError');
 var roomStatus = document.getElementById('roomStatus');
+var micFill = document.getElementById('micFill');
+var micVal = document.getElementById('micVal');
+var spkFill = document.getElementById('spkFill');
+var spkVal = document.getElementById('spkVal');
 
 joinBtn.onclick = function () {
   var name = nameInput.value.trim();
@@ -115,6 +147,7 @@ function connect() {
 }
 
 function onOpen() {
+  console.log('WS OPEN, sending join as ' + myName);
   reconnectDelay = 1000;
   ws.send(JSON.stringify({ type: 'join', name: myName }));
 }
@@ -129,6 +162,7 @@ function onMessage(evt) {
 
 function handleControl(msg) {
   if (msg.type === 'user_list') {
+    console.log('USER_LIST: ' + msg.users.length + ' users: ' + msg.users.map(function(u){return u.name;}).join(', '));
     login.style.display = 'none';
     roomEl.style.display = 'block';
     roomStatus.textContent = 'connected';
@@ -155,6 +189,11 @@ function handleControl(msg) {
 
 function handleAudio(data) {
   var src = new Int16Array(data);
+
+  if (!audioReceived) {
+    audioReceived = true;
+    console.log('AUDIO RX: ' + src.length + ' samples, ' + data.byteLength + ' bytes');
+  }
 
   while (((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) > MAX_DEPTH_SAMPLES) {
     for (var i = 0; i < FRAME_SAMPLES; i++) {
@@ -213,9 +252,17 @@ function startAudio() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       var input = e.inputBuffer.getChannelData(0);
       var int16 = new Int16Array(FRAME_SAMPLES);
+      var peak = 0;
       for (var i = 0; i < FRAME_SAMPLES; i++) {
         var s = Math.max(-1, Math.min(1, input[i]));
+        var abs = Math.abs(s);
+        if (abs > peak) peak = abs;
         int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      micPeak = Math.max(micPeak * levelDecay, peak);
+      if (!micActive) {
+        micActive = true;
+        console.log('MIC ACTIVE: peak=' + peak.toFixed(4) + ', sending ' + int16.byteLength + ' bytes');
       }
       ws.send(int16.buffer);
     };
@@ -235,6 +282,9 @@ function startAudio() {
   });
 
   schedulePlayback();
+  if (!levelTimer) {
+    levelTimer = setInterval(updateLevels, 80);
+  }
 }
 
 function schedulePlayback() {
@@ -248,11 +298,16 @@ function schedulePlayback() {
   var hasData = ((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) >= FRAME_SAMPLES;
 
   if (hasData) {
+    var peak = 0;
     for (var i = 0; i < FRAME_SAMPLES; i++) {
       var idx = (playIdx + i) % RING_CAP_SAMPLES;
-      channel[i] = ringBuf[idx] / 32768;
+      var f = ringBuf[idx] / 32768;
+      var abs = Math.abs(f);
+      if (abs > peak) peak = abs;
+      channel[i] = f;
       ringBuf[idx] = 0;
     }
+    spkPeak = Math.max(spkPeak * levelDecay, peak);
     playIdx = (playIdx + FRAME_SAMPLES) % RING_CAP_SAMPLES;
   }
 
@@ -282,6 +337,23 @@ function updateStats() {
   statsEl.textContent = Math.round(lastBps / 1024) + ' KB/s | ' + Object.keys(peers).length + ' peers';
 }
 
+function formatDb(lin) {
+  if (lin < 0.00001) return '-inf';
+  var db = 20 * Math.log10(lin);
+  return db.toFixed(0) + ' dB';
+}
+
+function updateLevels() {
+  micPeak = Math.max(0, micPeak * 0.9);
+  spkPeak = Math.max(0, spkPeak * 0.9);
+  var micPct = Math.min(100, micPeak * 100);
+  var spkPct = Math.min(100, spkPeak * 100);
+  micFill.style.width = micPct + '%';
+  spkFill.style.width = spkPct + '%';
+  micVal.textContent = formatDb(micPeak);
+  spkVal.textContent = formatDb(spkPeak);
+}
+
 function disconnect(intentional) {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -290,6 +362,10 @@ function disconnect(intentional) {
   if (scheduleTimer) {
     clearTimeout(scheduleTimer);
     scheduleTimer = null;
+  }
+  if (levelTimer) {
+    clearInterval(levelTimer);
+    levelTimer = null;
   }
   if (processor) {
     processor.disconnect();
@@ -316,6 +392,10 @@ function disconnect(intentional) {
   bytesReceived = 0;
   lastBps = 0;
   bpsResetTime = 0;
+  micPeak = 0;
+  spkPeak = 0;
+  micLevel = 0;
+  spkLevel = 0;
 
   if (ws) {
     ws.onclose = null;

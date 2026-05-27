@@ -50,7 +50,9 @@ async fn test_two_clients_audio_relay() {
         .unwrap()
         .unwrap();
     assert!(msg.is_binary());
-    assert_eq!(msg.into_data(), audio);
+    let data = msg.into_data();
+    assert_eq!(data.len(), audio.len() + 26);
+    assert_eq!(&data[26..], &audio[..]);
 
     // Alice does NOT receive echo
     assert!(

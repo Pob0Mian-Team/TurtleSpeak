@@ -60,9 +60,12 @@ impl Room {
     }
 
     pub fn broadcast_audio(&self, sender_id: &str, audio: &[u8]) {
+        let mut framed = Vec::with_capacity(26 + audio.len());
+        framed.extend_from_slice(sender_id.as_bytes());
+        framed.extend_from_slice(audio);
         for (cid, client) in &self.clients {
             if cid != sender_id {
-                let _ = client.audio_tx.send(audio.to_vec());
+                let _ = client.audio_tx.send(framed.clone());
             }
         }
     }
@@ -124,7 +127,10 @@ mod tests {
 
         room.broadcast_audio(&id1, &[1, 2, 3]);
         assert!(arx1.try_recv().is_err());
-        assert_eq!(arx2.try_recv().unwrap(), vec![1, 2, 3]);
+        let received = arx2.try_recv().unwrap();
+        assert_eq!(received.len(), 26 + 3);
+        assert_eq!(&received[..26], id1.as_bytes());
+        assert_eq!(&received[26..], &[1, 2, 3]);
     }
 
     #[test]

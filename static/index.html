@@ -19,17 +19,14 @@ button.leave { background: #ef4444; color: #fff; }
 .user { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 14px; }
 .user .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 8px; }
 .user .dot.silent { background: #475569; }
+.user .name-own { color: #38bdf8; }
 .stats { font-size: 11px; color: #64748b; text-align: right; }
 .status { font-size: 12px; color: #64748b; text-align: center; margin-top: 4px; }
 .error { color: #ef4444; font-size: 13px; margin-top: 8px; display: none; }
-.levels { margin-bottom: 10px; }
-.level-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
-.level-label { width: 18px; color: #94a3b8; }
-.level-bar { flex: 1; height: 8px; background: #334155; border-radius: 4px; overflow: hidden; }
-.level-fill { height: 100%; border-radius: 4px; transition: width 60ms linear; }
-.level-fill.mic { background: #38bdf8; }
-.level-fill.speaker { background: #22c55e; }
-.level-val { width: 30px; text-align: right; color: #64748b; font-size: 10px; }
+.peer-level { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.peer-bar { width: 80px; height: 6px; background: #334155; border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+.peer-fill { display: block; height: 100%; border-radius: 3px; transition: width 80ms linear; background: #22c55e; }
+.peer-fill.own { background: #38bdf8; }
 </style>
 </head>
 <body>
@@ -45,18 +42,6 @@ button.leave { background: #ef4444; color: #fff; }
 
   <div id="room" style="display:none">
     <div class="card">
-      <div class="levels">
-        <div class="level-row">
-          <span class="level-label">IN</span>
-          <div class="level-bar"><div id="micFill" class="level-fill mic" style="width:0%"></div></div>
-          <span id="micVal" class="level-val">-inf</span>
-        </div>
-        <div class="level-row">
-          <span class="level-label">OUT</span>
-          <div class="level-bar"><div id="spkFill" class="level-fill speaker" style="width:0%"></div></div>
-          <span id="spkVal" class="level-val">-inf</span>
-        </div>
-      </div>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         <span style="font-size:14px; font-weight:600">Room</span>
         <span class="stats" id="stats">--</span>
@@ -94,13 +79,10 @@ var lastBps = 0;
 var bpsResetTime = 0;
 var scheduleTimer = null;
 var levelTimer = null;
-var micLevel = 0;
-var spkLevel = 0;
 var micPeak = 0;
-var spkPeak = 0;
 var levelDecay = 0.97;
-var micActive = false;
 var audioReceived = false;
+var peerPeaks = {};
 
 var login = document.getElementById('login');
 var roomEl = document.getElementById('room');
@@ -111,10 +93,6 @@ var userListEl = document.getElementById('userList');
 var statsEl = document.getElementById('stats');
 var loginError = document.getElementById('loginError');
 var roomStatus = document.getElementById('roomStatus');
-var micFill = document.getElementById('micFill');
-var micVal = document.getElementById('micVal');
-var spkFill = document.getElementById('spkFill');
-var spkVal = document.getElementById('spkVal');
 
 joinBtn.onclick = function () {
   var name = nameInput.value.trim();
@@ -129,7 +107,6 @@ joinBtn.onclick = function () {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
     audioCtx.resume();
-    console.log('AudioContext created, state=' + audioCtx.state + ', sampleRate=' + audioCtx.sampleRate);
   }
 
   connect();
@@ -148,8 +125,6 @@ function connect() {
 }
 
 function onOpen() {
-  console.log('WS OPEN, sending join as ' + myName);
-  reconnectDelay = 1000;
   ws.send(JSON.stringify({ type: 'join', name: myName }));
 }
 
@@ -163,7 +138,6 @@ function onMessage(evt) {
 
 function handleControl(msg) {
   if (msg.type === 'user_list') {
-    console.log('USER_LIST: ' + msg.users.length + ' users: ' + msg.users.map(function(u){return u.name;}).join(', '));
     login.style.display = 'none';
     roomEl.style.display = 'block';
     roomStatus.textContent = 'connected';
@@ -189,11 +163,24 @@ function handleControl(msg) {
 }
 
 function handleAudio(data) {
-  var src = new Int16Array(data);
+  if (data.byteLength < 26) return;
+
+  var dv = new DataView(data);
+  var senderId = '';
+  for (var i = 0; i < 26; i++) {
+    senderId += String.fromCharCode(dv.getUint8(i));
+  }
+
+  var src = new Int16Array(data, 26);
+  var peak = 0;
+  for (var i = 0; i < src.length; i++) {
+    var abs = Math.abs(src[i] / 32768);
+    if (abs > peak) peak = abs;
+  }
+  peerPeaks[senderId] = Math.max((peerPeaks[senderId] || 0) * levelDecay, peak);
 
   if (!audioReceived) {
     audioReceived = true;
-    console.log('AUDIO RX: ' + src.length + ' samples, ' + data.byteLength + ' bytes');
   }
 
   while (((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) > MAX_DEPTH_SAMPLES) {
@@ -257,7 +244,6 @@ function startAudio() {
       autoGainControl: false
     }
   }).then(function (stream) {
-    console.log('getUserMedia SUCCESS, tracks=' + stream.getAudioTracks().length);
     micStream = stream;
     var source = audioCtx.createMediaStreamSource(stream);
     processor = audioCtx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
@@ -273,10 +259,6 @@ function startAudio() {
         int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
       micPeak = Math.max(micPeak * levelDecay, peak);
-      if (!micActive) {
-        micActive = true;
-        console.log('MIC ACTIVE: peak=' + peak.toFixed(4) + ', sending ' + int16.byteLength + ' bytes');
-      }
       ws.send(int16.buffer);
     };
     source.connect(processor);
@@ -307,22 +289,13 @@ function schedulePlayback() {
   var channel = buf.getChannelData(0);
 
   var hasData = ((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) >= FRAME_SAMPLES;
-  if (!hasData && writeIdx > 0 && !window._loggedNoData) {
-    window._loggedNoData = true;
-    console.log('PLAYBACK: writeIdx=' + writeIdx + ' playIdx=' + playIdx + ' diff=' + ((writeIdx - playIdx + RING_CAP_SAMPLES) % RING_CAP_SAMPLES) + ' need=' + FRAME_SAMPLES);
-  }
-
   if (hasData) {
-    var peak = 0;
     for (var i = 0; i < FRAME_SAMPLES; i++) {
       var idx = (playIdx + i) % RING_CAP_SAMPLES;
       var f = ringBuf[idx] / 32768;
-      var abs = Math.abs(f);
-      if (abs > peak) peak = abs;
       channel[i] = f;
       ringBuf[idx] = 0;
     }
-    spkPeak = Math.max(spkPeak * levelDecay, peak);
     playIdx = (playIdx + FRAME_SAMPLES) % RING_CAP_SAMPLES;
   }
 
@@ -343,7 +316,8 @@ function renderUserList() {
     }
   }
   userListEl.innerHTML = users.map(function (u) {
-    return '<div class="user"><span><span class="dot' + (u.me ? '' : ' silent') + '"></span>' + u.name + (u.me ? ' (you)' : '') + '</span></div>';
+    return '<div class="user"><span><span class="dot' + (u.me ? '' : ' silent') + '" id="dot_' + u.id + '"></span><span class="' + (u.me ? 'name-own' : 'name-peer') + '">' + u.name + '</span></span>' +
+      '<span class="peer-level"><span class="peer-bar"><span id="peerFill_' + u.id + '" class="peer-fill' + (u.me ? ' own' : '') + '" style="width:0%"></span></span></span></div>';
   }).join('');
   updateStats();
 }
@@ -352,21 +326,29 @@ function updateStats() {
   statsEl.textContent = Math.round(lastBps / 1024) + ' KB/s | ' + Object.keys(peers).length + ' peers';
 }
 
-function formatDb(lin) {
-  if (lin < 0.00001) return '-inf';
-  var db = 20 * Math.log10(lin);
-  return db.toFixed(0) + ' dB';
-}
-
 function updateLevels() {
   micPeak = Math.max(0, micPeak * 0.9);
-  spkPeak = Math.max(0, spkPeak * 0.9);
-  var micPct = Math.min(100, micPeak * 100);
-  var spkPct = Math.min(100, spkPeak * 100);
-  micFill.style.width = micPct + '%';
-  spkFill.style.width = spkPct + '%';
-  micVal.textContent = formatDb(micPeak);
-  spkVal.textContent = formatDb(spkPeak);
+
+  for (var pid in peers) {
+    if (Object.prototype.hasOwnProperty.call(peers, pid)) {
+      var level = peerPeaks[pid] || 0;
+      peerPeaks[pid] = Math.max(0, level * 0.9);
+      var fill = document.getElementById('peerFill_' + pid);
+      if (fill) {
+        fill.style.width = Math.min(100, peerPeaks[pid] * 100) + '%';
+      }
+      var dot = document.getElementById('dot_' + pid);
+      if (dot) {
+        dot.className = 'dot' + (peerPeaks[pid] > 0.005 ? '' : ' silent');
+      }
+    }
+  }
+  if (myId) {
+    var ownFill = document.getElementById('peerFill_' + myId);
+    if (ownFill) {
+      ownFill.style.width = Math.min(100, micPeak * 100) + '%';
+    }
+  }
 }
 
 function disconnect(intentional) {
@@ -399,6 +381,7 @@ function disconnect(intentional) {
     audioCtx = null;
   }
   peers = {};
+  peerPeaks = {};
   myId = null;
   ringBuf = new Int16Array(RING_CAP_SAMPLES);
   writeIdx = 0;
@@ -408,9 +391,6 @@ function disconnect(intentional) {
   lastBps = 0;
   bpsResetTime = 0;
   micPeak = 0;
-  spkPeak = 0;
-  micLevel = 0;
-  spkLevel = 0;
 
   if (ws) {
     ws.onclose = null;
